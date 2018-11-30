@@ -149,6 +149,23 @@ def _build_qsub_command(cmd, job_name, outfile, errfile, pe, n_cpu,queue_name):
         cmd=cmd, job_name=job_name, outfile=outfile, errfile=errfile,
         pe=pe, n_cpu=n_cpu, queue_name=queue_name)
 
+def _build_qsub_script(cmd, job_name, outfile, errfile, pe, n_cpu,queue_name,tmpdir="/tmp/"):
+    """Submit shell command to SGE queue via `qsub`"""
+    user_def_shell = os.environ["SHELL"]
+    script_fpath = os.path.join(tmpdir,"qsub_{}.sh".format(job_name))
+    with open(script_fpath,"w") as fh:
+        fh.write("""#! {user_shell}\n""".format(user_shell=user_def_shell))
+        fh.write("""#$ -o ":{outfile}" \n""".format(outfile=outfile))
+        fh.write("""#$ -e ":{errfile}" \n""".format(errfile=errfile))
+        fh.write("""#$ -V -r y\n""".format(user_shell=user_def_shell))
+        fh.write("""#$ -pe {pe} {n_cpu}\n""".format(pe = pe ,n_cpu = n_cpu))
+        fh.write("""#$ -N {job_name}\n""".format(job_name = job_name))
+        fh.write("""#$ -q all.q@@{queue_name} \n""".format(queue_name = queue_name))
+        fh.write("""\n""")
+        
+        fh.write("""{}\n""".format(cmd = cmd))
+    return script_fpath
+
 
 class SGEJobTask(luigi.Task):
 
@@ -313,9 +330,17 @@ class SGEJobTask(luigi.Task):
         self.errfile = os.path.join(self.tmp_dir, 'job.err')
         submit_cmd = _build_qsub_command(job_str, self.task_family, self.outfile,
                                          self.errfile, self.parallel_env, self.n_cpu,self.queue_name)
+        script_path=_build_qsub_script(job_str, self.task_family, self.outfile,
+                                         self.errfile, self.parallel_env, self.n_cpu,self.queue_name)
         logger.debug('qsub command: \n' + submit_cmd)
 
+        with open(script_path,"r") as sc_fh:
+            for line in sc_fh.readlines():
+                logger.debug(line)
+
         # Submit the job and grab job ID
+        submit_cmd = "qsub {}".format(script_path)
+        
         output = subprocess.check_output(submit_cmd, shell=True)
         self.job_id = _parse_qsub_job_id(output)
         logger.debug("Submitted job to qsub with response:\n%s" , output.decode())
