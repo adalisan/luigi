@@ -117,17 +117,17 @@ def _parse_qstat_state(qstat_out, job_id):
     `qstat` output is empty or job_id is not found.
 
     """
-    if qstat_out.strip() == '':
+    if qstat_out.strip() == b'':
         return 'u'
-    lines = qstat_out.split('\n')
+    lines = qstat_out.split(b'\n')
     # skip past header
-    while not lines.pop(0).startswith('---'):
+    while not lines.pop(0).startswith(b'---'):
         pass
     for line in lines:
         if line:
             job, prior, name, user, state = line.strip().split()[0:5]
             if int(job) == int(job_id):
-                return state
+                return state.decode()
     return 'u'
 
 
@@ -142,12 +142,12 @@ def _parse_qsub_job_id(qsub_out):
     return int(qsub_out.split()[2])
 
 
-def _build_qsub_command(cmd, job_name, outfile, errfile, pe, n_cpu):
+def _build_qsub_command(cmd, job_name, outfile, errfile, pe, n_cpu,queue_name):
     """Submit shell command to SGE queue via `qsub`"""
-    qsub_template = """echo {cmd} | qsub -o ":{outfile}" -e ":{errfile}" -V -r y -pe {pe} {n_cpu} -N {job_name}"""
+    qsub_template = """echo {cmd} | qsub -o ":{outfile}" -e ":{errfile}" -V -r y -q all.q@@{queue_name} -pe {pe} {n_cpu} -N {job_name}"""
     return qsub_template.format(
         cmd=cmd, job_name=job_name, outfile=outfile, errfile=errfile,
-        pe=pe, n_cpu=n_cpu)
+        pe=pe, n_cpu=n_cpu, queue_name=queue_name)
 
 
 class SGEJobTask(luigi.Task):
@@ -184,6 +184,7 @@ class SGEJobTask(luigi.Task):
     n_cpu = luigi.IntParameter(default=2, significant=False)
     shared_tmp_dir = luigi.Parameter(default='/home', significant=False)
     parallel_env = luigi.Parameter(default='orte', significant=False)
+    pybin = luigi.Parameter(default='python',significant=False)
     job_name_format = luigi.Parameter(
         significant=False, default=None, description="A string that can be "
         "formatted with class variables to name the job with qsub.")
@@ -203,7 +204,7 @@ class SGEJobTask(luigi.Task):
         significant=False,
         description="don't tarball (and extract) the luigi project files")
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, queue_name, *args, **kwargs):
         super(SGEJobTask, self).__init__(*args, **kwargs)
         if self.job_name:
             # use explicitly provided job name
@@ -215,6 +216,8 @@ class SGEJobTask(luigi.Task):
         else:
             # default to the task family
             self.job_name = self.task_family
+        if queue_name != "":
+            self.queue_name = queue_name
 
     def _fetch_task_failures(self):
         if not os.path.exists(self.errfile):
@@ -276,13 +279,22 @@ class SGEJobTask(luigi.Task):
             self.job_file = os.path.join(out_dir, 'job-instance.pickle')
             if self.__module__ == '__main__':
                 d = pickle.dumps(self)
-                module_name = os.path.basename(sys.argv[0]).rsplit('.', 1)[0]
-                d = d.replace('(c__main__', "(c" + module_name)
-                with open(self.job_file, "w") as f:
-                    f.write(d)
+
+# discarded change b05fb5a... fix python3.6 bugs for byte str confusion copied  from PR #2480 in spotify/luigi
+                module_name = os.path.basename(sys.argv[0]).rsplit('.', 1)[0].encode()
+                d = d.replace(b'(c__main__', b"(c" + module_name)
+                open(self.job_file, "wb").write(d)
+                #ignore upstream change master
+                # module_name = os.path.basename(sys.argv[0]).rsplit('.', 1)[0]
+                # d = d.replace('(c__main__', "(c" + module_name)
+                # with open(self.job_file, "w") as f:
+                #     f.write(d)
             else:
                 with open(self.job_file, "wb") as f:
                     pickle.dump(self, f)
+
+
+
 
     def _run_job(self):
 
@@ -290,7 +302,8 @@ class SGEJobTask(luigi.Task):
         runner_path = sge_runner.__file__
         if runner_path.endswith("pyc"):
             runner_path = runner_path[:-3] + "py"
-        job_str = 'python {0} "{1}" "{2}"'.format(
+        job_str = '{0}  {1} "{2}" "{3}"'.format(
+            self.pybin,
             runner_path, self.tmp_dir, os.getcwd())  # enclose tmp_dir in quotes to protect from special escape chars
         if self.no_tarball:
             job_str += ' "--no-tarball"'
@@ -299,13 +312,13 @@ class SGEJobTask(luigi.Task):
         self.outfile = os.path.join(self.tmp_dir, 'job.out')
         self.errfile = os.path.join(self.tmp_dir, 'job.err')
         submit_cmd = _build_qsub_command(job_str, self.task_family, self.outfile,
-                                         self.errfile, self.parallel_env, self.n_cpu)
+                                         self.errfile, self.parallel_env, self.n_cpu,self.queue_name)
         logger.debug('qsub command: \n' + submit_cmd)
 
         # Submit the job and grab job ID
         output = subprocess.check_output(submit_cmd, shell=True)
         self.job_id = _parse_qsub_job_id(output)
-        logger.debug("Submitted job to qsub with response:\n" + output)
+        logger.debug("Submitted job to qsub with response:\n%s" , output.decode())
 
         self._track_job()
 
