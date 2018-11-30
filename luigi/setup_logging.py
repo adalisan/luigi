@@ -42,7 +42,7 @@ class BaseLogging(object):
         if isinstance(cls.config, LuigiConfigParser):
             return False
         try:
-            logging_config = cls.config['logging']
+            logging_config = cls.config.get('logging')
         except (TypeError, KeyError, NoSectionError):
             return False
         logging.config.dictConfig(logging_config)
