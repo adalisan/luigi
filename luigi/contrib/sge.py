@@ -155,15 +155,17 @@ def _build_qsub_script(cmd, job_name, outfile, errfile, pe, n_cpu,queue_name,tmp
     script_fpath = os.path.join(tmpdir,"qsub_{}.sh".format(job_name))
     with open(script_fpath,"w") as fh:
         fh.write("""#! {user_shell}\n""".format(user_shell=user_def_shell))
-        fh.write("""#$ -o ":{outfile}" \n""".format(outfile=outfile))
-        fh.write("""#$ -e ":{errfile}" \n""".format(errfile=errfile))
+        fh.write("""#$ -o "{outfile}" \n""".format(outfile=outfile))
+        fh.write("""#$ -e "{errfile}" \n""".format(errfile=errfile))
         fh.write("""#$ -V -r y\n""".format(user_shell=user_def_shell))
         fh.write("""#$ -pe {pe} {n_cpu}\n""".format(pe = pe ,n_cpu = n_cpu))
         fh.write("""#$ -N {job_name}\n""".format(job_name = job_name))
         fh.write("""#$ -q all.q@@{queue_name} \n""".format(queue_name = queue_name))
         fh.write("""\n""")
         
-        fh.write("""{}\n""".format(cmd = cmd))
+        fh.write("""{cmd}\n""".format(cmd = cmd))
+    #stat = os.stat(script_fpath)
+    #os.chmod(script_fpath, stat.st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.IXOTH |stat.IXUSR)
     return script_fpath
 
 
@@ -331,7 +333,8 @@ class SGEJobTask(luigi.Task):
         submit_cmd = _build_qsub_command(job_str, self.task_family, self.outfile,
                                          self.errfile, self.parallel_env, self.n_cpu,self.queue_name)
         script_path=_build_qsub_script(job_str, self.task_family, self.outfile,
-                                         self.errfile, self.parallel_env, self.n_cpu,self.queue_name)
+                                         self.errfile, self.parallel_env, self.n_cpu,self.queue_name,
+                                         tmpdir=self.shared_tmp_dir)
         logger.debug('qsub command: \n' + submit_cmd)
 
         with open(script_path,"r") as sc_fh:
@@ -340,10 +343,24 @@ class SGEJobTask(luigi.Task):
 
         # Submit the job and grab job ID
         submit_cmd = "qsub {}".format(script_path)
-        
-        output = subprocess.check_output(submit_cmd, shell=True)
+        logger.debug('qsub command: \n' + submit_cmd)
+        try:
+          output = subprocess.check_output(submit_cmd, shell=True)
+          logger.debug("submit job via shell cmd")
+        except CalledProcessError as e :
+          print (e.returncode)
+          print (e.output)
+          try:
+            output = subprocess.check_output(["qsub", script_path], shell=True)
+            logger.debug("trying resubmitting job via qsub script ")
+          except CalledProcessError as e:
+            print (e.returncode)
+            print (e.output)
+            output = subprocess.check_output(submit_cmd,shell=False)
+            
         self.job_id = _parse_qsub_job_id(output)
         logger.debug("Submitted job to qsub with response:\n%s" , output.decode())
+        logger.debug("Submitted job to qsub with jobid:\n%s" , self.job_id)
 
         self._track_job()
 
